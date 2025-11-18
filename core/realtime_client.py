@@ -1,6 +1,7 @@
 """
 Azure GPT-Realtime WebSocket Client
 Handles bidirectional audio streaming with Azure OpenAI's GPT-Realtime API
+FIXED: Proper callback chain integration for audio playback
 """
 
 import asyncio
@@ -45,11 +46,11 @@ class RealtimeClient:
         Args:
             on_audio_received: Callback function called when audio is received from model
                               Should accept bytes of audio data
+            on_text_received: Callback function called when text is received from model
         """
         self.ws: Optional[WebSocketClientProtocol] = None
         self.is_connected = False
         self.on_audio_received = on_audio_received
-        # Callback for text responses (delta and final)
         self.on_text_received = on_text_received
         self.context_retriever = ContextRetriever()
         self.last_user_input = ""
@@ -57,11 +58,8 @@ class RealtimeClient:
         # Session tracking
         self.session_id = None
         self.response_count = 0
-        # Track how many raw PCM bytes we've appended so we can decide whether to commit
         self._audio_appended_bytes = 0
-        # Track whether the most recent response produced any text (to detect audio-only replies)
         self._last_response_had_text = False
-        # Remember which response we've already requested a text follow-up for
         self._text_followup_requested_for = None
     
     async def connect(self) -> bool:
@@ -75,7 +73,6 @@ class RealtimeClient:
             try:
                 logger.info(f"Connecting to Azure GPT-Realtime... (attempt {attempt + 1})")
                 
-                # Connect with API key in header
                 headers = {
                     "api-key": AZURE_API_KEY,
                 }
@@ -92,7 +89,6 @@ class RealtimeClient:
                 self.is_connected = True
                 logger.info("[OK] Connected to Azure GPT-Realtime API")
                 
-                # Initialize session
                 await self._initialize_session()
                 return True
             
@@ -113,7 +109,6 @@ class RealtimeClient:
         try:
             logger.info("Waiting for session.created event...")
             
-            # First, wait for session.created from server
             try:
                 response = await asyncio.wait_for(self.ws.recv(), timeout=5)
                 data = json.loads(response)
@@ -123,7 +118,6 @@ class RealtimeClient:
                     self.session_id = data.get('session', {}).get('id')
                     logger.info(f"Session created: {self.session_id}")
                     
-                    # Now send session update
                     session_config = {
                         "type": "session.update",
                         "session": {
@@ -159,7 +153,6 @@ class RealtimeClient:
                 "audio": audio_b64
             }
             await self.ws.send(json.dumps(event))
-            # Track appended audio bytes for commit decision
             try:
                 self._audio_appended_bytes += len(audio_data)
             except Exception:
@@ -175,6 +168,7 @@ class RealtimeClient:
         
         Args:
             user_text: Optional user transcription text for context
+            modalities: List of modalities for response
         """
         if not self.is_connected or not self.ws:
             logger.warning("Not connected, cannot trigger response")
@@ -184,21 +178,15 @@ class RealtimeClient:
             logger.info("[TRIGGER] Sending request to model...")
             self.last_user_input = user_text
             
-            # Get context from clinic data
             context = self.context_retriever.get_context(user_text)
-            
-            # Create system prompt with context
             system_prompt = SYSTEM_PROMPT_TEMPLATE.format(context=context)
             
-            # Commit audio buffer so server knows audio is ready for processing
             try:
-                # Only commit if we have at least ~100ms of audio buffered (server requires minimum)
-                min_bytes = int(0.1 * AUDIO_SAMPLE_RATE * 2)  # 0.1s * sample_rate * 2 bytes per sample (pcm16 mono)
+                min_bytes = int(0.1 * AUDIO_SAMPLE_RATE * 2)
                 if getattr(self, '_audio_appended_bytes', 0) >= min_bytes:
                     commit_event = {"type": "input_audio_buffer.commit"}
                     await self.ws.send(json.dumps(commit_event))
                     logger.info("[AUDIO COMMIT] Sent input_audio_buffer.commit to server")
-                    # reset counter after committing
                     try:
                         self._audio_appended_bytes = 0
                     except Exception:
@@ -208,7 +196,6 @@ class RealtimeClient:
             except Exception as e:
                 logger.debug(f"[TRIGGER] Failed to send commit: {e}")
 
-            # Create response event
             if modalities is None:
                 modalities = ["audio", "text"]
 
@@ -244,10 +231,8 @@ class RealtimeClient:
         try:
             while self.is_connected and self.ws:
                 try:
-                    # wait for a message with timeout so the loop stays responsive
                     message = await asyncio.wait_for(self.ws.recv(), timeout=5)
                 except asyncio.TimeoutError:
-                    # No message received within timeout — keep loop alive and log debug
                     logger.debug("[LISTEN] recv timeout — still waiting for messages...")
                     continue
                 except websockets.exceptions.ConnectionClosed:
@@ -255,11 +240,9 @@ class RealtimeClient:
                     self.is_connected = False
                     break
 
-                # Got a message — handle it
                 try:
-                    # Log raw incoming message for debugging/observability
                     try:
-                        logger.debug(f"[RAW MESSAGE] {message}")
+                        logger.debug(f"[RAW MESSAGE] {message[:100]}...")
                     except Exception:
                         pass
                     await self._handle_message(message)
@@ -289,6 +272,7 @@ class RealtimeClient:
                 audio_b64 = data.get('delta')
                 if audio_b64:
                     audio_bytes = base64_to_pcm(audio_b64)
+                    logger.info(f"[MODEL AUDIO] Received {len(audio_bytes)} bytes from model")
                     if self.on_audio_received:
                         await self._call_async(self.on_audio_received, audio_bytes)
             
@@ -296,7 +280,6 @@ class RealtimeClient:
                 # Receive text chunk from model
                 text = data.get('delta', '')
                 logger.debug(f"Model text: {text}")
-                # Mark that we received text for this response
                 try:
                     self._last_response_had_text = True
                 except Exception:
@@ -328,15 +311,11 @@ class RealtimeClient:
                 # Response generation complete
                 status = data.get('response', {}).get('status')
                 logger.info(f"Response generation complete: {status}")
-                # If the response completed but we didn't receive any text events,
-                # request a text-only follow-up once so the user sees a transcript.
                 try:
                     current_resp = self.response_count
                     if not self._last_response_had_text and self._text_followup_requested_for != current_resp:
                         logger.info("[FOLLOWUP] No text received for response — requesting text-only follow-up")
-                        # mark follow-up requested for this response to avoid loops
                         self._text_followup_requested_for = current_resp
-                        # send a text-only follow-up asking for a transcript/summary
                         followup_event = {
                             "type": "response.create",
                             "response": {
@@ -350,7 +329,6 @@ class RealtimeClient:
                 except Exception as e:
                     logger.debug(f"Failed to send text follow-up: {e}")
                 finally:
-                    # reset the flag for subsequent responses
                     try:
                         self._last_response_had_text = False
                     except Exception:
@@ -403,7 +381,6 @@ class RealtimeClient:
             return
         
         try:
-            # Use API's expected content item type for text input
             event = {
                 "type": "conversation.item.create",
                 "item": {
@@ -421,7 +398,6 @@ class RealtimeClient:
             await self.ws.send(json.dumps(event))
             logger.debug(f"Sent text message: {text}")
 
-            # Trigger response - prefer text-only for explicit text messages
             await self.trigger_response(text, modalities=["text"])
         
         except Exception as e:

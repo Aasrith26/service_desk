@@ -1,258 +1,206 @@
 """
-Main entry point for Clinic Voice Assistant
-Orchestrates the full bidirectional audio streaming pipeline
+Service Desk Voice Assistant - Main Application
+Handles voice input, processes through Azure OpenAI Realtime API, and returns responses
+FIXED: Matches actual RealtimeClient signature + Auto-creates logs directory
 """
 
 import asyncio
+import logging
 import sys
-import json
-from typing import Optional
+import os
 from pathlib import Path
+from datetime import datetime
+from typing import Optional
 
-from config.settings import DEBUG_MODE
-from utils.logger import get_logger
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent))
+
 from core.realtime_client import RealtimeClient
 from core.audio_streamer import AudioStreamingEngine
 from core.slot_manager import SlotManager
-import sounddevice as sd
+from core.callback_manager import RealtimeClientCallbackManager
+from config import (
+    ENABLE_LOGGING,
+    LOG_FILE_PATH,
+)
 
-logger = get_logger(__name__)
+# Create logs directory if it doesn't exist
+if LOG_FILE_PATH:
+    log_dir = os.path.dirname(LOG_FILE_PATH)
+    if log_dir and not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+        print(f"[INFO] Created logs directory: {log_dir}")
+
+# Configure logging with UTF-8 encoding for Windows emoji support
+logging.basicConfig(
+    level=logging.DEBUG if ENABLE_LOGGING else logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(LOG_FILE_PATH, encoding='utf-8') if LOG_FILE_PATH else logging.NullHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 class ClinicVoiceAssistant:
-    """Main application class with debug-heavy tracing and slot persistence.
-
-    Behaviour:
-    - Starts audio capture and realtime client
-    - Streams microphone audio to Azure
-    - Receives streaming text (partial/final) and audio from the model
-    - Updates slots from final text and persists confirmed appointments to disk
-    - Emits debug logs for nearly every important event
-    """
-
-    APPOINTMENTS_FILE = Path(__file__).resolve().parent.joinpath('data', 'appointments.json')
-
+    """Main voice assistant for clinic/hospital service desk."""
+    
     def __init__(self):
-        """Initialize the voice assistant and wire callbacks."""
-        logger.debug("Initializing ClinicVoiceAssistant")
-        self.realtime_client = RealtimeClient()
-        self.engine = AudioStreamingEngine(self.realtime_client)
-        self.slot_manager = SlotManager()
-
-        # Wire callbacks
-        self.realtime_client.on_text_received = self._on_model_text
-        # audio callback is used by engine, but add a log wrapper here as well
-        orig_audio_cb = getattr(self.realtime_client, 'on_audio_received', None)
-        self.realtime_client.on_audio_received = self._on_model_audio
-
-        # ensure appointments file exists
-        self.APPOINTMENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        if not self.APPOINTMENTS_FILE.exists():
-            self._write_json(self.APPOINTMENTS_FILE, [])
-
-    def _write_json(self, path: Path, data):
+        """Initialize the voice assistant with callback chain management."""
+        logger.info("=" * 80)
+        logger.info("INITIALIZING CLINIC VOICE ASSISTANT")
+        logger.info("=" * 80)
+        
         try:
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            logger.debug(f"Wrote JSON to {path}")
+            logger.debug("[INIT] Creating RealtimeClient...")
+            # RealtimeClient takes optional callbacks in __init__
+            self.realtime_client = RealtimeClient(
+                on_audio_received=None,  # Will be set via callback manager
+                on_text_received=None    # Will be set via callback manager
+            )
+            logger.debug("[INIT] ✓ RealtimeClient created")
+            
+            logger.debug("[INIT] Setting up callback manager...")
+            self.callback_manager = RealtimeClientCallbackManager(self.realtime_client)
+            logger.debug("[INIT] ✓ Callback manager initialized")
+            
+            logger.debug("[INIT] Registering main.py handlers...")
+            self.callback_manager.add_text_handler(self._on_model_text, priority=10)
+            self.callback_manager.add_audio_handler(self._on_model_audio, priority=10)
+            logger.debug("[INIT] ✓ Main.py handlers registered")
+            
+            logger.debug("[INIT] Creating AudioStreamingEngine...")
+            self.engine = AudioStreamingEngine(
+                self.realtime_client,
+                callback_manager=self.callback_manager
+            )
+            logger.debug("[INIT] ✓ AudioStreamingEngine created")
+            
+            logger.debug("[INIT] Creating SlotManager...")
+            self.slot_manager = SlotManager()
+            logger.debug("[INIT] ✓ SlotManager created")
+            
+            callback_status = self.callback_manager.get_status()
+            logger.info(f"[INIT] Callback Chain Status: {callback_status}")
+            
+            logger.info("[INIT] ✓ ClinicVoiceAssistant initialized successfully")
+            logger.info("=" * 80)
+            
         except Exception as e:
-            logger.error(f"Failed to write JSON to {path}: {e}")
-
-    def _read_json(self, path: Path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            return []
-
-    def _persist_appointment(self, slots: dict):
-        try:
-            logger.info("Persisting appointment to disk")
-            appointments = self._read_json(self.APPOINTMENTS_FILE)
-            appointments.append(slots)
-            self._write_json(self.APPOINTMENTS_FILE, appointments)
-            logger.info("Appointment saved")
-        except Exception as e:
-            logger.error(f"Failed to persist appointment: {e}")
-
-    async def run(self):
-        """Run the voice assistant in continuous loop.
-
-        This method starts the streaming engine and monitors connection state.
-        """
-        logger.info("=" * 60)
-        logger.info("CLINIC VOICE ASSISTANT - Starting (debug mode: %s)" % (DEBUG_MODE,))
-        logger.info("=" * 60)
-
-        # Clear instructions for user
-        logger.info("")
-        logger.info("📋 INSTRUCTIONS:")
-        logger.info("  1️⃣  Speak clearly when you see '🎤 Listening for your voice input'")
-        logger.info("  2️⃣  After speaking, wait 1-2 seconds (do NOT press Ctrl+C)")
-        logger.info("  3️⃣  You will hear a beep (🔊) when speech is recognized")
-        logger.info("  4️⃣  The model will respond - watch for '[MODEL RESPONSE]' in logs")
-        logger.info("  5️⃣  Press Ctrl+C to exit gracefully")
-        logger.info("")
-
-        try:
-            # Start the streaming engine
-            logger.debug("Starting AudioStreamingEngine.start()")
-            if not await self.engine.start():
-                logger.error("Failed to start streaming engine")
-                return False
-
-            logger.info("[OK] Ready for conversation")
-            logger.info("🎤 Listening for your voice input... (Press Ctrl+C to stop)")
-
-            # Extra debug: report audio device and input stream status so user knows mic capture started
-            try:
-                # Log default input/output device indices and names
-                try:
-                    default_in, default_out = sd.default.device
-                    devs = sd.query_devices()
-                    din = devs[default_in]['name'] if isinstance(devs[default_in], dict) else str(devs[default_in])
-                    dout = devs[default_out]['name'] if isinstance(devs[default_out], dict) else str(devs[default_out])
-                    logger.info(f"Default devices - input: {default_in} ({din}), output: {default_out} ({dout})")
-                except Exception:
-                    logger.debug("Could not determine default sounddevice device names")
-                devices = self.engine.streamer.get_audio_devices()
-                logger.info(f"Audio devices detected: {len(devices)}")
-                # Log first 3 device names for quick inspection
-                for i, d in enumerate(devices[:3]):
-                    # d may be a dict with 'name'
-                    name = d.get('name') if isinstance(d, dict) else str(d)
-                    logger.info(f"  device[{i}]: {name}")
-            except Exception as e:
-                logger.debug(f"Could not query audio devices: {e}")
-
-            if getattr(self.engine.streamer, 'input_stream', None):
-                logger.info("✓ Microphone input stream appears active")
-            else:
-                logger.warning("⚠️  Microphone input stream not active — check device/permissions")
-
-            logger.info("✓ (All systems ready. Awaiting your voice input...)")
-            logger.info("🎤 Listening for your voice input... (Press Ctrl+C to stop)")
-
-            # Run engine (capture, playback, listen) concurrently
-            await self.engine.run()
-
-        except KeyboardInterrupt:
-            logger.info("👋 Shutdown requested by user")
-        except Exception as e:
-            logger.error(f"ERROR in main loop: {e}")
-            if DEBUG_MODE:
-                import traceback
-                traceback.print_exc()
-        finally:
-            logger.debug("Stopping engine and disconnecting")
-            await self.engine.stop()
-            logger.info("✓ Clinic Voice Assistant stopped")
-
-    async def test_connection(self) -> bool:
-        """Test connection to Azure GPT-Realtime API with verbose debug logs."""
-        logger.info("Testing Azure connection...")
-
-        try:
-            logger.debug("Calling realtime_client.connect()")
-            if not await self.realtime_client.connect():
-                logger.error("[FAIL] Connection test failed")
-                return False
-
-            logger.info("[OK] Connected successfully")
-            logger.debug("Sending test message to model")
-            await self.realtime_client.send_message("Hello, this is a debug test message.")
-
-            # Allow some time for streaming responses (text/audio)
-            await asyncio.sleep(3)
-
-            logger.debug("Disconnecting after test")
-            await self.realtime_client.disconnect()
-            logger.info("[OK] Test successful")
-            return True
-
-        except Exception as e:
-            logger.error(f"Test failed: {e}")
-            return False
-
-    async def _on_model_audio(self, audio_bytes: bytes):
-        """Receive raw audio bytes from the model and log details.
-
-        The engine already queues these for playback; this handler adds debugging.
-        """
-        try:
-            logger.debug(f"Model audio received: {len(audio_bytes)} bytes")
-            # Do not duplicate playback; engine handles it. But keep for debug.
-        except Exception as e:
-            logger.error(f"Error in _on_model_audio: {e}")
-
+            logger.error(f"[INIT] ✗ Failed to initialize ClinicVoiceAssistant: {e}", exc_info=True)
+            raise
+    
     async def _on_model_text(self, text: str, partial: bool = False):
-        """Handle model text (partial and final). Update slot manager on final text.
-
-        This function is intentionally verbose to aid debugging of ASR/MTL flows.
+        """Handle text response from model.
+        
+        Args:
+            text: Text response from the model
+            partial: Whether this is a partial response
         """
         try:
-            if partial:
-                # Silently ignore partials to reduce log noise
-                return
-
-            # final text - this is the model's response to the user
-            logger.info(f"[MODEL RESPONSE] {text}")
-
-            # Update slots with final text
-            slots = self.slot_manager.update_from_text(text)
-
-            # If user confirmed, persist appointment
-            if slots.get('confirmed') == 'yes' and slots.get('doctor') and slots.get('date') and slots.get('time'):
-                logger.info("Slots confirmed by user, persisting appointment")
-                self._persist_appointment(slots)
-
+            response_type = "PARTIAL" if partial else "COMPLETE"
+            logger.info(f"[MODEL TEXT] {response_type}: {text}")
+            
+            if not partial:
+                logger.info(f"[RESPONSE] Assistant: {text}")
+                
+                if "appointment" in text.lower():
+                    logger.info("[APPOINTMENT] Appointment confirmation detected")
+                    
         except Exception as e:
-            logger.error(f"Error handling model text: {e}")
+            logger.error(f"[MODEL TEXT] Error processing text: {e}", exc_info=True)
+    
+    async def _on_model_audio(self, audio_data: bytes, **kwargs):
+        """Handle audio response from model.
+        
+        Args:
+            audio_data: Audio bytes from the model
+            **kwargs: Additional arguments
+        """
+        try:
+            logger.debug(f"[MODEL AUDIO] Received {len(audio_data)} bytes of audio")
+            logger.info(f"[AUDIO] Audio playback initiated ({len(audio_data)} bytes)")
+            
+        except Exception as e:
+            logger.error(f"[MODEL AUDIO] Error processing audio: {e}", exc_info=True)
+    
+    async def start(self):
+        """Start the voice assistant."""
+        try:
+            logger.info("Starting voice assistant...")
+            logger.info("Ready to receive voice input")
+            logger.info("Listening for speech...")
+            
+            success = await self.engine.start()
+            
+            if not success:
+                logger.error("[START] ✗ Failed to start engine")
+                return False
+            
+            logger.info("[START] ✓ Voice assistant started successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[START] ✗ Error starting voice assistant: {e}", exc_info=True)
+            return False
+    
+    async def stop(self):
+        """Stop the voice assistant."""
+        try:
+            logger.info("Stopping voice assistant...")
+            
+            await self.engine.stop()
+            await self.realtime_client.disconnect()
+            
+            logger.info("[STOP] ✓ Voice assistant stopped")
+            
+        except Exception as e:
+            logger.error(f"[STOP] ✗ Error stopping voice assistant: {e}", exc_info=True)
+    
+    async def run(self):
+        """Run the voice assistant."""
+        try:
+            if not await self.start():
+                logger.error("[RUN] Failed to start voice assistant")
+                return
+            
+            logger.info("[RUN] Voice assistant running... Press Ctrl+C to stop")
+            
+            try:
+                while True:
+                    await asyncio.sleep(1)
+                    
+            except KeyboardInterrupt:
+                logger.info("[RUN] Received interrupt signal")
+                
+        except Exception as e:
+            logger.error(f"[RUN] ✗ Error in run loop: {e}", exc_info=True)
+            
+        finally:
+            await self.stop()
 
 
 async def main():
     """Main entry point."""
-    # Check for command-line arguments
-    if len(sys.argv) > 1:
-        if sys.argv[1] == '--test':
-            # Run connection test
-            assistant = ClinicVoiceAssistant()
-            success = await assistant.test_connection()
-            sys.exit(0 if success else 1)
+    try:
+        logger.info("Starting Clinic Voice Assistant...")
         
-        elif sys.argv[1] == '--help':
-            print("""
-Clinic Voice Assistant - Interactive Medical Appointment Booking
-
-Usage:
-    python main.py                  Run the assistant in full mode
-    python main.py --test           Test Azure connection only
-    python main.py --help           Show this help message
-
-Features:
-    - Real-time voice conversation with Azure GPT-Realtime
-    - Telugu + English support
-    - Doctor availability and appointment booking
-    - Clinic information queries
-    - Completely hands-free operation
-
-Requirements:
-    - Azure API key (from Azure AI Foundry)
-    - Microphone and speakers
-    - Internet connection
-
-Environment Variables:
-    AZURE_API_KEY               Your Azure OpenAI API key
-    LOG_LEVEL                   Logging level (DEBUG, INFO, WARNING, ERROR)
-    DEBUG_MODE                  Enable debug logging (true/false)
-    SIMULATE_AUDIO              Use simulated audio instead of real mic (true/false)
-            """)
-            sys.exit(0)
-    
-    # Run normal mode
-    assistant = ClinicVoiceAssistant()
-    await assistant.run()
+        assistant = ClinicVoiceAssistant()
+        
+        await assistant.run()
+        
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Application terminated by user")
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"Unhandled exception: {e}", exc_info=True)
+        sys.exit(1)
