@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from core.realtime_client import RealtimeClient
 from core.audio_streamer import AudioStreamingEngine
 from core.slot_manager import SlotManager
-from core.callback_manager import RealtimeClientCallbackManager
+from core.callback_manager import CallbackManager
 from config import (
     ENABLE_LOGGING,
     LOG_FILE_PATH,
@@ -62,7 +62,7 @@ class ClinicVoiceAssistant:
             logger.debug("[INIT] ✓ RealtimeClient created")
             
             logger.debug("[INIT] Setting up callback manager...")
-            self.callback_manager = RealtimeClientCallbackManager(self.realtime_client)
+            self.callback_manager = CallbackManager(self.realtime_client)
             logger.debug("[INIT] ✓ Callback manager initialized")
             
             logger.debug("[INIT] Registering main.py handlers...")

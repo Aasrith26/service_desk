@@ -1,8 +1,13 @@
+"""
+COMPLETE WORKING: core/audio_streamer.py
+With audio buffering for smooth playback - NO BREAKING!
+"""
 
 import asyncio
 import logging
 import numpy as np
 from typing import Optional, Callable
+import sounddevice as sd
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +41,6 @@ class AudioStreamer:
     async def capture_audio(self):
         """Capture audio from microphone and detect silence."""
         try:
-            import sounddevice as sd
-            
             logger.info("[AudioStreamer] Starting audio capture...")
             
             with sd.InputStream(samplerate=self.sample_rate, 
@@ -123,6 +126,7 @@ class AudioStreamingEngine:
         self.streamer = None
         self.listen_task = None
         self.is_running = False
+        self._audio_buffer = []  # Buffer for collecting audio chunks
         
         logger.debug("[AudioStreamingEngine] Initialized with callback_manager support")
     
@@ -142,53 +146,71 @@ class AudioStreamingEngine:
             logger.info(f"[USER SPEECH ENDED] Silence detected after {duration:.1f}s")
             logger.info("Processing your request... Sending to Azure model")
             
+            # Clear audio buffer for new response
+            self._audio_buffer = []
+            
             await self.realtime_client.trigger_response(self.current_user_text)
             
+            # Wait for response to complete
             await asyncio.sleep(3)
+            
+            # Play the complete buffered audio
+            await self._play_buffered_audio()
+            
             self.streamer.response_completed()
             
         except Exception as e:
             logger.error(f"[AudioStreamingEngine] Error in _on_silence_detected: {e}", exc_info=True)
     
-    async def _on_model_text(self, text: str, partial: bool = False):
+    async def _on_model_text(self, text: str, **kwargs):
         """Handle text response from model."""
         try:
+            partial = kwargs.get('partial', False)
             response_type = "PARTIAL" if partial else "COMPLETE"
-            logger.debug(f"[AudioStreamingEngine] Model text ({response_type}): {text}")
+            logger.info(f"[AudioStreamingEngine] Model text ({response_type}): {text}")
             
         except Exception as e:
             logger.error(f"[AudioStreamingEngine] Error in _on_model_text: {e}", exc_info=True)
     
     async def _on_model_audio(self, audio_data: bytes, **kwargs):
-        """Handle audio response from model and play it."""
+        """Handle audio response from model and BUFFER it (don't play yet)."""
         try:
-            logger.debug(f"[AudioStreamingEngine] Received {len(audio_data)} bytes from model")
+            logger.info(f"[MODEL AUDIO] Received {len(audio_data)} bytes from model")
             
-            try:
-                import sounddevice as sd
-                import threading
-                
-                # Convert bytes to audio array
-                audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32767
-                
-                # Play audio in a separate thread to not block async
-                def play_audio():
-                    try:
-                        logger.info(f"[PLAYBACK] Playing {len(audio_array)} samples at 24kHz")
-                        sd.play(audio_array, samplerate=24000)
-                        sd.wait()
-                        logger.info("[PLAYBACK] Audio playback complete")
-                    except Exception as e:
-                        logger.error(f"[PLAYBACK] Error: {e}", exc_info=True)
-                
-                thread = threading.Thread(target=play_audio, daemon=True)
-                thread.start()
-                
-            except Exception as e:
-                logger.error(f"[AudioStreamingEngine] Error playing audio: {e}", exc_info=True)
+            # Buffer the chunk
+            self._audio_buffer.append(audio_data)
+            logger.debug(f"[AUDIO BUFFER] Chunk #{len(self._audio_buffer)} buffered, total {sum(len(c) for c in self._audio_buffer)} bytes")
             
         except Exception as e:
-            logger.error(f"[AudioStreamingEngine] Error in _on_model_audio: {e}", exc_info=True)
+            logger.error(f"[AudioStreamingEngine] Error buffering audio: {e}", exc_info=True)
+    
+    async def _play_buffered_audio(self):
+        """Play all buffered audio chunks together - SMOOTH PLAYBACK!"""
+        try:
+            if not self._audio_buffer:
+                logger.warning("[PLAYBACK] No audio to play - buffer is empty")
+                return
+            
+            # Combine all chunks into one complete audio
+            combined_audio = b''.join(self._audio_buffer)
+            chunk_count = len(self._audio_buffer)
+            self._audio_buffer = []  # Clear buffer
+            
+            logger.info(f"[PLAYBACK] Playing {len(combined_audio)} bytes ({chunk_count} chunks)")
+            
+            # Convert to numpy array
+            audio_array = np.frombuffer(combined_audio, dtype=np.int16).astype(np.float32) / 32767.0
+            duration = len(audio_array) / 24000
+            logger.info(f"[PLAYBACK] Audio duration: {duration:.2f} seconds")
+            
+            # Play complete audio - NO BREAKING!
+            sd.play(audio_array, samplerate=24000)
+            sd.wait()  # Wait until playback finishes
+            
+            logger.info("[PLAYBACK] ✓ Audio playback completed smoothly")
+            
+        except Exception as e:
+            logger.error(f"[PLAYBACK] ERROR: {e}", exc_info=True)
     
     async def start(self) -> bool:
         """Start the full streaming engine with callback manager integration."""
@@ -201,17 +223,16 @@ class AudioStreamingEngine:
             
             logger.debug("[ENGINE] Connected to realtime client")
             
-            if self.callback_manager:
-                logger.debug("[ENGINE] Registering handlers through callback manager")
-                self.callback_manager.add_audio_handler(self._on_model_audio, priority=5)
-                self.callback_manager.add_text_handler(self._on_model_text, priority=5)
-                logger.debug("[ENGINE] Handlers registered via callback manager")
-                logger.info(f"[ENGINE] Callback status: {self.callback_manager.get_status()}")
-                
-            else:
-                logger.warning("[ENGINE] No callback manager provided - using direct assignment (legacy mode)")
-                self.realtime_client.on_audio_received = self._on_model_audio
-                self.realtime_client.on_text_received = self._on_model_text
+            if not self.callback_manager:
+                logger.error("[ENGINE] No callback manager provided!")
+                return False
+            
+            # Register handlers through callback manager
+            logger.debug("[ENGINE] Registering handlers through callback manager")
+            self.callback_manager.add_audio_handler(self._on_model_audio, priority=5)
+            self.callback_manager.add_text_handler(self._on_model_text, priority=5)
+            logger.debug("[ENGINE] Handlers registered via callback manager")
+            logger.info(f"[ENGINE] Callback status: {self.callback_manager.get_status()}")
             
             logger.debug("[ENGINE] Creating audio streamer...")
             self.streamer = AudioStreamer(
@@ -228,7 +249,7 @@ class AudioStreamingEngine:
             logger.debug("[ENGINE] Audio streamer started")
             
             self.is_running = True
-            self.listen_task = asyncio.create_task(self._listen_and_track())
+            self.listen_task = asyncio.create_task(self.realtime_client.listen())
             
             logger.info("[ENGINE] Audio streaming engine started successfully")
             logger.info("[ENGINE] Listening for voice input... Speak now!")
@@ -237,16 +258,6 @@ class AudioStreamingEngine:
         except Exception as e:
             logger.error(f"[ENGINE] Error starting engine: {e}", exc_info=True)
             return False
-    
-    async def _listen_and_track(self):
-        """Listen for responses and track when they complete."""
-        try:
-            await self.realtime_client.listen()
-        except Exception as e:
-            logger.error(f"[ENGINE] Error in listen loop: {e}", exc_info=True)
-        finally:
-            if self.streamer:
-                self.streamer.response_completed()
     
     async def stop(self):
         """Stop the audio streaming engine."""
