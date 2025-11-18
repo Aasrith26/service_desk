@@ -1,0 +1,131 @@
+{
+  "clinic_info": {
+    "name": "Health Plus Clinic",
+    "phone": "+91-40-XXXX-XXXX",
+    "email": "appointments@healthplus.in",
+    "location": "Hyderabad, Telangana",
+    "established": 2018,
+    "timezone": "IST",
+    "languages_supported": ["English", "Telugu", "Hindi"]
+  },
+  "doctors": [
+    {
+      "id": "DR001",
+      "name": "Dr. Kavya Sharma",
+      "name_telugu": "డాక్టర్ కవ్య శర్మ",
+      "specialization": "General Medicine",
+      "specialization_telugu": "సాధారణ వైద్యం",
+      "experience_years": 8,
+      "qualifications": ["MBBS", "MD"],
+      "languages": ["English", "Hindi", "Telugu"],
+      "consultation_fee": 500,
+      "availability": {
+        "monday": ["09:00-12:00", "15:00-18:00"],
+        "tuesday": ["09:00-12:00", "15:00-18:00"],
+        "wednesday": ["09:00-12:00"],
+        "thursday": ["09:00-12:00", "15:00-18:00"],
+        "friday": ["09:00-12:00", "15:00-18:00"],
+        "saturday": ["09:00-13:00"],
+        "sunday": "closed"
+      },
+      "bio": "Dr. Kavya specializes in preventive medicine and chronic disease management."
+    },
+    {
+      "id": "DR002",
+      "name": "Dr. Rajesh Patel",
+      "name_telugu": "డాక్టర్ రాజేష్ పటేల్",
+      "specialization": "Cardiology",
+      "specialization_telugu": "హృదయ వైద్యం",
+      "experience_years": 12,
+      "qualifications": ["MBBS", "MD", "DM"],
+      "languages": ["English", "Hindi", "Gujarati", "Telugu"],
+      "consultation_fee": 800,
+      "availability": {
+        "monday": ["10:00-13:00", "16:00-19:00"],
+        "tuesday": ["10:00-13:00"],
+        "wednesday": ["10:00-13:00", "16:00-19:00"],
+        "thursday": ["10:00-13:00"],
+        "friday": ["10:00-13:00", "16:00-19:00"],
+        "saturday": "closed",
+        "sunday": "closed"
+      },
+      "bio": "Dr. Rajesh is an expert in cardiac care, arrhythmias, and cardiovascular diseases."
+    },
+    {
+      "id": "DR003",
+      "name": "Dr. Priya Desai",
+      "name_telugu": "డాక్టర్ ప్రియ దేశాయ్",
+      "specialization": "Pediatrics",
+      "specialization_telugu": "పిల్లల వైద్యం",
+      "experience_years": 6,
+      "qualifications": ["MBBS", "MD"],
+      "languages": ["English", "Hindi", "Telugu"],
+      "consultation_fee": 400,
+      "availability": {
+        "monday": ["08:00-11:00", "14:00-17:00"],
+        "tuesday": ["08:00-11:00", "14:00-17:00"],
+        "wednesday": ["08:00-11:00"],
+        "thursday": ["08:00-11:00", "14:00-17:00"],
+        "friday": ["08:00-11:00", "14:00-17:00"],
+        "saturday": ["08:00-11:00"],
+        "sunday": "closed"
+      },
+      "bio": "Dr. Priya provides comprehensive pediatric care and developmental guidance."
+    }
+  ],
+  "departments": [
+    {
+      "name": "General Medicine",
+      "name_telugu": "సాధారణ వైద్యం",
+      "floor": 1,
+      "contact": "ext. 101"
+    },
+    {
+      "name": "Cardiology",
+      "name_telugu": "హృదయ వైద్యం",
+      "floor": 2,
+      "contact": "ext. 201"
+    },
+    {
+      "name": "Pediatrics",
+      "name_telugu": "పిల్లల వైద్యం",
+      "floor": 1,
+      "contact": "ext. 102"
+    }
+  ],
+  "services": [
+    {
+      "name": "Consultation",
+      "name_telugu": "సంప్రదింపు",
+      "duration_minutes": 30
+    },
+    {
+      "name": "Follow-up",
+      "name_telugu": "తరువాత సందర్శన",
+      "duration_minutes": 15
+    },
+    {
+      "name": "Health Checkup Package",
+      "name_telugu": "ఆరోగ్య పరీక్ష ప్యాకేజ్",
+      "duration_minutes": 60,
+      "cost": 1500
+    }
+  ],
+  "faqs": [
+    {
+      "question": "What should I bring for my first visit?",
+      "question_telugu": "నా మొదటి సందర్శన కోసం నేను ఏమి తీసుకువెళ్లాలి?",
+      "answer": "Please bring valid ID, insurance card (if applicable), and medical history documents."
+    },
+    {
+      "question": "Is there parking available?",
+      "question_telugu": "పార్కింగ్ అందుబాటులో ఉందా?",
+      "answer": "Yes, we have free parking for patients."
+    },
+    {
+      "question": "Can I reschedule my appointment?",
+      "question_telugu": "నా అపాయింట్‌మెంట్‌ను రీషెడ్యూల్ చేయవచ్చా?",
+      "answer": "Yes, you can reschedule up to 24 hours before your appointment."
+    }
+  ]
+}
