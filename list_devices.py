@@ -9,8 +9,8 @@ import sys
 from pathlib import Path
 
 # --- CONFIGURATION ---
-AZURE_ENDPOINT = "wss://shyam-mhvudwae-eastus2.services.ai.azure.com/openai/realtime?api-version=2024-10-01-preview&deployment=gpt-4o-realtime-preview"
-AZURE_API_KEY = "BhrrQpZqHtpdskVivvqgGDtxLs2QVuwFavleDwrCwwcGWFhZtvI6JQQ99BKACHYHv6XJ3w3AAAAACOGK5NWJ"
+AZURE_ENDPOINT = ""
+AZURE_API_KEY = ""
 
 # Audio Settings
 SAMPLE_RATE = 24000 # Azure prefers 24k
