@@ -1,6 +1,6 @@
 """
 COMPLETE WORKING: core/callback_manager.py
-Python 3.9 compatible with proper callback chain
+Updated with 'on_response_done' chain for event-driven playback
 """
 
 import asyncio
@@ -51,6 +51,8 @@ class CallbackManager:
         self.on_audio_received = CallbackChain("on_audio_received")
         self.on_text_received = CallbackChain("on_text_received")
         self.on_connection_closed = CallbackChain("on_connection_closed")
+        # --- NEW CHAIN ---
+        self.on_response_done = CallbackChain("on_response_done")
         
         # Wire up the realtime client to use these chains
         self._wire_callbacks()
@@ -62,36 +64,34 @@ class CallbackManager:
         # Set the realtime client's callbacks to invoke our chains
         self.realtime_client.on_audio_received = self._on_audio_callback
         self.realtime_client.on_text_received = self._on_text_callback
+        self.realtime_client.on_response_done = self._on_response_done_callback
         
         logger.debug("[CALLBACK MANAGER] Wired callbacks to RealtimeClient")
     
     async def _on_audio_callback(self, audio_data: bytes, **kwargs):
-        """Internal callback that invokes the audio chain."""
         await self.on_audio_received.invoke(audio_data, **kwargs)
     
     async def _on_text_callback(self, text: str, **kwargs):
-        """Internal callback that invokes the text chain."""
         await self.on_text_received.invoke(text, **kwargs)
+        
+    async def _on_response_done_callback(self, **kwargs):
+        await self.on_response_done.invoke(**kwargs)
     
     def add_audio_handler(self, handler: Callable, priority: int = 10):
-        """Register an audio handler."""
         self.on_audio_received.add_handler(handler, priority)
-        logger.debug(f"[CALLBACK MANAGER] Adding audio handler: {handler.__name__}")
     
     def add_text_handler(self, handler: Callable, priority: int = 10):
-        """Register a text handler."""
         self.on_text_received.add_handler(handler, priority)
-        logger.debug(f"[CALLBACK MANAGER] Adding text handler: {handler.__name__}")
-    
-    def add_connection_closed_handler(self, handler: Callable, priority: int = 10):
-        """Register a connection closed handler."""
-        self.on_connection_closed.add_handler(handler, priority)
-        logger.debug(f"[CALLBACK MANAGER] Adding connection closed handler: {handler.__name__}")
+        
+    def add_response_done_handler(self, handler: Callable, priority: int = 10):
+        """Register a response done handler."""
+        self.on_response_done.add_handler(handler, priority)
+        logger.debug(f"[CALLBACK MANAGER] Adding response_done handler: {handler.__name__}")
     
     def get_status(self) -> Dict[str, int]:
-        """Get count of registered handlers for each callback type."""
         return {
             'on_text_received': self.on_text_received.count(),
             'on_audio_received': self.on_audio_received.count(),
-            'on_connection_closed': self.on_connection_closed.count()
+            'on_connection_closed': self.on_connection_closed.count(),
+            'on_response_done': self.on_response_done.count()
         }
