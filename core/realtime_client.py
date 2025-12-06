@@ -14,12 +14,15 @@ from core.context_retriever import ContextRetriever
 logger = get_logger(__name__)
 
 class RealtimeClient:
-    def __init__(self, on_audio_received=None, on_text_received=None, on_response_done=None):
+    def __init__(self, on_audio_received=None, on_text_received=None, on_response_done=None, on_call_ended=None, on_interruption=None):
         self.ws = None
         self.is_connected = False
         self.on_audio_received = on_audio_received
         self.on_text_received = on_text_received
         self.on_response_done = on_response_done
+        self.on_call_ended = on_call_ended
+        self.on_interruption = on_interruption
+        self.ignore_audio = False # Packet gating flag
         self.context_retriever = ContextRetriever()
 
     async def connect(self):
@@ -57,6 +60,7 @@ class RealtimeClient:
         2. Collect: doctor, date, time, patient name (in Latin script), phone
         3. BEFORE booking, confirm ALL details with user
         4. ONLY after user says "yes/OK/సరే", call book_appointment tool
+        5. If user says goodbye or is done, FIRST say a polite goodbye (e.g. "Thank you, have a nice day!"), THEN use the end_call tool immediately.
         
         TIME CONFIRMATION (CRITICAL):
         - Always say times in NUMERIC format: "10:00" not "పది గంటలు"
@@ -115,6 +119,16 @@ class RealtimeClient:
                         "date": {"type": "string", "description": "Date in YYYY-MM-DD format (optional)"}
                     }
                 }
+            },
+            {
+                    "type": "function",
+                    "name": "end_call",
+                    "description": "Call this AFTER you have spoken your final goodbye message. This will disconnect the phone.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
             }
         ]
         
@@ -132,7 +146,7 @@ class RealtimeClient:
                     "type": "server_vad",
                     "threshold": 0.5,
                     "prefix_padding_ms": 300,
-                    "silence_duration_ms": 500
+                    "silence_duration_ms": 1500
                 },
                 "temperature": 0.6
             }
@@ -155,20 +169,35 @@ class RealtimeClient:
                 
                 # DEBUG: Log all event types
                 event_type = data.get('type', 'unknown')
-                logger.debug(f"📨 Event: {event_type}")
+                logger.info(f"Event: {event_type}")
                 
                 # HANDLING SERVER EVENTS
-                if data['type'] == 'response.audio.delta' and self.on_audio_received:
-                    await self._call(self.on_audio_received, base64_to_pcm(data['delta']))
+                if event_type == 'input_audio_buffer.speech_started':
+                    logger.info("Interruption detected! Cancelling response...")
+                    self.ignore_audio = True  # GATE: Block audio immediately
+                    await self.cancel_response()
+                    if self.on_interruption:
+                         await self._call(self.on_interruption)
+
+                elif event_type == 'response.created':
+                    logger.info("New response started. Unblocking audio.")
+                    self.ignore_audio = False # GATE: Open gate for new response
+
+                elif data['type'] == 'response.audio.delta' and self.on_audio_received:
+                    if self.ignore_audio:
+                        # logger.debug("Dropped stale audio packet")
+                        pass
+                    else:
+                        await self._call(self.on_audio_received, base64_to_pcm(data['delta']))
                 
                 # AUDIO TRANSCRIPT EVENTS
                 elif data['type'] == 'response.audio_transcript.delta':
                     text_chunk = data.get('delta', '')
-                    logger.debug(f"📝 Transcript Delta: {text_chunk}")
+                    logger.debug(f"Transcript Delta: {text_chunk}")
                 
                 elif data['type'] == 'response.audio_transcript.done':
                     text_full = data.get('transcript', '')
-                    logger.info(f"📝 TRANSCRIPT: {text_full}")
+                    logger.info(f"TRANSCRIPT: {text_full}")
                     if self.on_text_received and text_full:
                         await self._call(self.on_text_received, text_full)
                 
@@ -179,7 +208,7 @@ class RealtimeClient:
                     arguments_str = data.get('arguments', '{}')
                     arguments = json.loads(arguments_str)
                     
-                    logger.info(f"🔧 Function called: {function_name} with {arguments}")
+                    logger.info(f"Function called: {function_name} with {arguments}")
                     
                     # Execute function and get result
                     result = await self._execute_function(function_name, arguments)
@@ -202,7 +231,7 @@ class RealtimeClient:
                     
                 # Input Transcript
                 elif data['type'] == 'conversation.item.input_audio_transcription.completed':
-                    logger.info(f"🎤 User said: {data.get('transcript', '')}")
+                    logger.info(f"User said: {data.get('transcript', '')}")
                     
         except Exception as e:
             logger.error(f"Listen error: {e}")
@@ -280,6 +309,12 @@ class RealtimeClient:
                     "available_slots": result_slots,
                     "message": f"Found {sum(len(times) for dates in result_slots.values() for times in dates.values())} available slots"
                 }
+            
+            elif function_name == "end_call":
+                if self.on_call_ended:
+                    # We can schedule the disconnect
+                    asyncio.create_task(self._call(self.on_call_ended))
+                return {"message": "Call ended"}
             
             else:
                 return {"error": f"Unknown function: {function_name}"}

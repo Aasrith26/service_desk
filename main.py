@@ -53,7 +53,7 @@ class ClinicVoiceAssistant:
         # Initialize DB
         self.db = ClinicDatabase()
         
-        logger.info("✓ Initialization Complete")
+        logger.info("Initialization Complete")
     
     async def _on_model_text(self, text: str):
         """Log assistant's text responses"""
@@ -62,7 +62,7 @@ class ClinicVoiceAssistant:
     async def run(self):
         logger.info("Starting System...")
         await self.engine.start()
-        logger.info("✓ SYSTEM RUNNING")
+        logger.info("SYSTEM RUNNING")
         
         try:
             while True:
