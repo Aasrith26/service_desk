@@ -24,6 +24,10 @@ AZURE_DEPLOYMENT = os.getenv("AZURE_DEPLOYMENT", "gpt-realtime")
 AZURE_API_VERSION = os.getenv("AZURE_API_VERSION", "2024-10-01-preview")
 
 if not AZURE_REALTIME_ENDPOINT:
+    # Auto-correct hostname if it uses the internal/services domain which might be unreachable
+    if "services.ai.azure.com" in AZURE_HOST:
+        AZURE_HOST = AZURE_HOST.replace("services.ai.azure.com", "openai.azure.com")
+        
     # Ensure we use wss:// scheme for WebSocket realtime API
     AZURE_REALTIME_ENDPOINT = (
         f"wss://{AZURE_HOST}/openai/realtime?api-version={AZURE_API_VERSION}&deployment={AZURE_DEPLOYMENT}"

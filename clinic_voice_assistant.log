@@ -44342,3 +44342,9 @@ Shutdown requested...
 2025-11-19 17:01:26 - core.context_retriever - INFO - [context_retriever.py:44] - Loaded clinic data with 3 doctors
 2025-11-19 17:16:10 - core.context_retriever - INFO - [context_retriever.py:44] - Loaded clinic data with 3 doctors
 2025-11-19 17:16:12 - core.realtime_client - INFO - [realtime_client.py:84] - [OK] Connected to Azure GPT-Realtime API
+2025-12-05 16:05:08 - core.realtime_client - ERROR - [realtime_client.py:109] - Connect Error: [Errno 11001] getaddrinfo failed
+2025-12-05 16:05:10 - core.realtime_client - ERROR - [realtime_client.py:109] - Connect Error: [Errno 11001] getaddrinfo failed
+2025-12-05 16:05:12 - core.realtime_client - ERROR - [realtime_client.py:109] - Connect Error: [Errno 11001] getaddrinfo failed
+2025-12-06 15:46:40 - core.realtime_client - ERROR - [realtime_client.py:132] - Listen error: CallbackManager._on_text_callback() takes 2 positional arguments but 3 were given
+2025-12-06 15:46:47 - core.realtime_client - ERROR - [realtime_client.py:132] - Listen error: CallbackManager._on_text_callback() takes 2 positional arguments but 3 were given
+2025-12-06 19:04:39 - core.realtime_client - INFO - [realtime_client.py:34] - Session initialized. Ready for voice input...

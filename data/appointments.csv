@@ -1,0 +1,25 @@
+Doctor,Date,Time,Status,PatientName,PatientPhone,BookedAt
+Dr. Kavya Sharma,2025-12-06,10:00,available,,,
+Dr. Kavya Sharma,2025-12-06,11:00,available,,,
+Dr. Kavya Sharma,2025-12-06,16:00,available,,,
+Dr. Kavya Sharma,2025-12-06,17:00,available,,,
+Dr. Rajesh Patel,2025-12-06,10:00,available,,,
+Dr. Rajesh Patel,2025-12-06,11:00,available,,,
+Dr. Rajesh Patel,2025-12-06,16:00,available,,,
+Dr. Rajesh Patel,2025-12-06,17:00,available,,,
+Dr. Priya Desai,2025-12-06,10:00,available,,,
+Dr. Priya Desai,2025-12-06,11:00,available,,,
+Dr. Priya Desai,2025-12-06,16:00,available,,,
+Dr. Priya Desai,2025-12-06,17:00,available,,,
+Dr. Kavya Sharma,2025-12-07,10:00,available,,,
+Dr. Kavya Sharma,2025-12-07,11:00,available,,,
+Dr. Kavya Sharma,2025-12-07,16:00,booked,Revanth,9191812131,2025-12-06T16:20:33.406509
+Dr. Kavya Sharma,2025-12-07,17:00,available,,,
+Dr. Rajesh Patel,2025-12-07,10:00,available,,,
+Dr. Rajesh Patel,2025-12-07,11:00,booked,Karthik Reddy,9381241869,2025-12-06T15:51:09.379026
+Dr. Rajesh Patel,2025-12-07,16:00,booked,Aasrith,9130056728,2025-12-06T16:04:59.941090
+Dr. Rajesh Patel,2025-12-07,17:00,booked,Teja,9130014235,2025-12-06T15:56:51.147599
+Dr. Priya Desai,2025-12-07,10:00,available,,,
+Dr. Priya Desai,2025-12-07,11:00,available,,,
+Dr. Priya Desai,2025-12-07,16:00,available,,,
+Dr. Priya Desai,2025-12-07,17:00,booked,Asrith,9381241869,2025-12-06T17:01:49.967157

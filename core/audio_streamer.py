@@ -1,8 +1,10 @@
 """
 FINAL FIX: core/audio_streamer.py
-- CONFIG: Set interruption_threshold = 0.018 (User Verified).
+- CONFIG: Set interruption_threshold = 0.012 (User Verified).
 - FIXED: Audio Format Bug (Converts Float32 -> Int16). The model will hear you now.
 - KEEPS: Smart Gain & Interruption logic.
+- IMPROVED: Uses OutputStream for smooth playback.
+- UPDATED: Noise Gate to 0.02 to block background noise.
 """
 
 import asyncio
@@ -25,9 +27,9 @@ class AudioStreamer:
         self.chunk_size = 1024
         
         # THRESHOLDS (User Tuned)
-        self.noise_floor = 0.005       # Approx noise floor
+        self.noise_floor = 0.003       # Lowered - 0.02 was blocking all audio
         self.silence_threshold = 0.01  # Silence below this
-        self.interruption_threshold = 0.018 # <--- YOUR SWEET SPOT
+        self.interruption_threshold = 0.012 # Lowered for better sensitivity
         
         self.is_running = False
         self.is_playing = False
@@ -45,6 +47,9 @@ class AudioStreamer:
             while self.is_running:
                 chunk, _ = stream.read(self.chunk_size)
                 rms = np.sqrt(np.mean(chunk**2))
+                
+                # Debug: Visual RMS Meter
+                # print(f"RMS: {rms:.5f} | {'VN' if rms > self.noise_floor else '..'} ", end="\r")
 
                 # 1. INTERRUPTION (Hardware Kill)
                 if self.is_playing:
@@ -64,56 +69,33 @@ class AudioStreamer:
                         self.speech_counter = 0
                     continue 
 
-                # 2. PROCESSING (Smart Amp -> Queue)
-                # Boost volume nicely if it's speech, ignore if it's noise
-                processed_chunk = self._smart_amp(chunk, rms)
-                
-                self.loop.call_soon_threadsafe(self.queue.put_nowait, (processed_chunk.copy(), rms))
-
-    def _smart_amp(self, chunk, rms):
-        """Boosts voice volume without distorting background noise."""
-        # Only boost if it's louder than the noise floor (Speech)
-        if rms > self.noise_floor:
-            # Target RMS 0.15 is a good volume for Azure
-            target = 0.15
-            gain = min(target / (rms + 0.00001), 4.0) # Cap gain at 4x
-            return np.clip(chunk * gain, -1.0, 1.0)
-        return chunk
+                # 2. PROCESSING (Raw Audio -> Queue)
+                self.loop.call_soon_threadsafe(self.queue.put_nowait, (chunk.copy(), rms))
 
     async def _process_queue(self):
-        """Async Logic: Converts to Int16 and Handles VAD."""
+        """Async Logic: Converts to Int16 and Sends to Server."""
+        counter = 0
         while self.is_running:
             chunk_float, rms = await self.queue.get()
+            counter += 1
 
-            # ---------------------------------------------------------
-            # CRITICAL FIX: CONVERT FLOAT32 TO PCM16 BYTES
-            # ---------------------------------------------------------
-            # 1. Scale float (-1.0 to 1.0) to Int16 range (-32768 to 32767)
-            # 2. Convert to bytes
+            # 1. Convert to PCM16
             chunk_int16 = (chunk_float * 32767).astype(np.int16).tobytes()
 
-            # SENDING (Noise Gate)
-            if rms > 0.002:
-                if self.on_audio_chunk: await self.on_audio_chunk(chunk_int16)
-
-            # VAD LOGIC (Speech Detection)
-            if rms > self.silence_threshold:
-                if not self.user_has_spoken:
-                    print("🗣️ Speaking...")
-                self.user_has_spoken = True
-                self.silence_counter = 0
+            # 2. NOISE GATE / SILENCE INJECTION
+            is_silence = False
+            if rms < self.noise_floor: 
+                chunk_int16 = b'\x00' * len(chunk_int16)
+                is_silence = True
             
-            elif rms < self.silence_threshold:
-                self.silence_counter += 1
-                # 12 chunks = 0.5s silence
-                if self.silence_counter >= 12: 
-                    self.silence_counter = 0
-                    if self.user_has_spoken:
-                        print(">> Sending response...")
-                        self.user_has_spoken = False
-                        if self.on_silence_detected: await self.on_silence_detected(0.5)
-            else:
-                self.silence_counter = 0
+            # Visual Feedback (DISABLED - for diagnostics only)
+            # if counter % 25 == 0:
+            #     status = "🔇 SILENCE" if is_silence else "🔊 AUDIO"
+            #     print(f"[VAD] {status} | RMS: {rms:.4f} | Threshold: {self.noise_floor}", flush=True)
+
+            # 3. Send to Server
+            if self.on_audio_chunk: 
+                await self.on_audio_chunk(chunk_int16)
 
     async def _safe_callback(self, cb):
         if cb: await cb()
@@ -132,17 +114,27 @@ class AudioStreamer:
         self.is_playing = playing
         if playing: 
             self.speech_counter = 0
-            self.user_has_spoken = False 
 
 class AudioStreamingEngine:
     def __init__(self, client, manager=None):
         self.client = client
         self.manager = manager
         self.streamer = None
-        self.buffer = []
-        self.playback_task = None
+        self.output_stream = None
+        self.playback_queue = asyncio.Queue()
+        self.is_playing = False
+        
+        # Metrics
+        self.metrics = {
+            "sent_chunks": 0,
+            "received_chunks": 0,
+            "received_bytes": 0
+        }
 
     async def start(self):
+        # Start Playback Loop
+        asyncio.create_task(self._playback_loop())
+        
         while True:
             if await self.client.connect():
                 if self.manager:
@@ -150,8 +142,7 @@ class AudioStreamingEngine:
                     self.manager.add_response_done_handler(self._on_done, priority=5)
                 
                 self.streamer = AudioStreamer(
-                    on_audio_chunk=self.client.send_audio,
-                    on_silence_detected=self._on_silence,
+                    on_audio_chunk=self._on_input_audio,
                     on_interruption=self._on_interrupt
                 )
                 await self.streamer.start()
@@ -161,38 +152,56 @@ class AudioStreamingEngine:
             print("⚠️ Reconnecting...")
             await asyncio.sleep(2)
 
+    async def _playback_loop(self):
+        """Continuous playback loop using OutputStream."""
+        # Create OutputStream
+        # Blocksize=512 (approx 21ms) for low latency
+        with sd.OutputStream(samplerate=24000, channels=1, dtype='float32', blocksize=512) as stream:
+            while True:
+                chunk = await self.playback_queue.get()
+                stream.write(chunk)
+
     async def stop(self):
         if self.streamer: await self.streamer.stop()
         await self.client.disconnect()
 
-    async def _on_silence(self, duration):
-        await self.client.trigger_response()
-
     async def _on_interrupt(self):
-        if self.playback_task: self.playback_task.cancel()
-        await self.client.cancel_response()
-        self.buffer = []
-        await asyncio.sleep(0.1)
+        # Local Interruption detected (User spoke while assistant was talking)
+        # 1. Stop Playback immediately
+        while not self.playback_queue.empty():
+            try: self.playback_queue.get_nowait()
+            except: pass
         if self.streamer: self.streamer.set_playing(False)
+        
+        # 2. Tell Server to STOP generating response
+        await self.client.cancel_response()
+
+    async def _on_input_audio(self, chunk_int16):
+        self.metrics["sent_chunks"] += 1
+        await self.client.send_audio(chunk_int16)
 
     async def _on_audio(self, data, **kwargs):
-        self.buffer.append(data)
+        """
+        LOWER LATENCY: Push chunks to playback queue.
+        """
+        # Metrics
+        self.metrics["received_chunks"] += 1
+        self.metrics["received_bytes"] += len(data)
+        
+        if self.metrics["received_chunks"] % 50 == 0:
+            logger.info(f"📊 METRICS: Sent={self.metrics['sent_chunks']} | Recv={self.metrics['received_chunks']} ({self.metrics['received_bytes']} bytes)")
+
+        # Convert base64/bytes -> float32 array
+        arr = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32767.0
+        
+        if self.streamer: 
+            self.streamer.set_playing(True)
+        
+        # Push to queue for the playback loop
+        await self.playback_queue.put(arr)
 
     async def _on_done(self, **kwargs):
-        if not self.buffer: return
-        
-        full_audio = b''.join(self.buffer)
-        self.buffer = []
-        arr = np.frombuffer(full_audio, dtype=np.int16).astype(np.float32) / 32767.0
-        
-        if self.streamer: self.streamer.set_playing(True)
-        sd.play(arr, samplerate=24000)
-        
-        duration = len(arr) / 24000
-        try:
-            self.playback_task = asyncio.create_task(asyncio.sleep(duration))
-            await self.playback_task
-        except asyncio.CancelledError:
-            sd.stop()
-        
-        if self.streamer: self.streamer.set_playing(False)
+        if self.streamer: 
+            # Allow a small buffer drain time
+            await asyncio.sleep(0.5)
+            self.streamer.set_playing(False)
