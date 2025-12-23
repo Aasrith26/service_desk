@@ -1,226 +1,204 @@
 import json
 import logging
 import base64
-import numpy as np
-import scipy.signal
+import asyncio
 from fastapi import WebSocket
-
 from core.realtime_client import RealtimeClient
+from utils import g711
 
 logger = logging.getLogger(__name__)
 
-# --- AUDIO HELPERS ---
-
-def mulaw_to_pcm16(mulaw_bytes):
-    """
-    Convert 8kHz Mu-law bytes -> 24kHz PCM16 bytes
-    """
+def pcm24k_to_pcm8k(pcm24k_bytes):
+    """Convert 24kHz PCM16 bytes -> 8kHz PCM16 bytes (Exotel format)"""
     try:
-        # 1. Decode Mu-law (G.711)
-        # Mu-law standard expansion
-        y = np.frombuffer(mulaw_bytes, dtype=np.uint8)
-        y = y.astype(np.float32)
-        # Invert bits for standard G.711 if needed, but often untreated.
-        # Standard formula:
-        mu = 255.0
-        # Determine sign and magnitude
-        # y is 0-255. 0-127 is negative (with bit inversion usually), 128-255 positive.
-        # Actually standard definition: 
-        # x = sign(y) * (1/mu) * ((1+mu)**|y| - 1)
-        # But commonly we use a lookup or simple formula.
-        
-        # Simplified vectorized conversion:
-        # 0x00-0x7F: Positive? 0x80-0xFF: Negative? 
-        # Actually Exotel streams standard Mulaw.
-        # To avoid complex bit logic, let's use a standard lookup pre-computation logic if fast enough,
-        # OR just use a quick approximation or finding a snippet.
-        
-        # Let's use the standard "companding" formula on normalized input.
-        # But mu-law input is integer indices.
-        # y_normalized = (2 * y - 255) / 255.0  <-- NO, this is for 8-bit PCM.
-        
-        # Let's use a known snippet for 'audioop.ulaw2lin' equivalent behavior using numpy.
-        # Or simpler: if scipy is available... scipy doesn't have it.
-        # Let's assume standard bit flipping if required (often ~y).
-        
-        # Safe bet: Use a library-free lookup approach for stability.
-        # But for brevity, I will use a concise algorithm here.
-        
-        # Algorithm:
-        y = ~y # Invert bits (standard G.711)
-        sign = np.where(y & 0x80, -1, 1)
-        exponent = (y >> 4) & 0x07
-        mantissa = y & 0x0F
-        sample = sign * (1 + 2 * mantissa + 33 * (1 << exponent))
-        # This results in standard linear values (roughly 14-bit range).
-        # Clip/Scale to signed 16-bit
-        # sample typically ranges +/- 8159.
-        # Scale to +/- 32767
-        sample = sample * (32767.0 / 8159.0)
-        pcm_8k = sample.astype(np.int16)
-
-        # 2. Resample 8kHz -> 24kHz
-        # Use scipy.signal.resample
-        # Since we are upsampling by integer factor 3 (8->24), we can just use repeat?
-        # Repeat introduces aliases. Linear interp is better.
-        # Scipy resample does FFT based resampling (best quality).
-        num_samples = len(pcm_8k)
-        new_samples = int(num_samples * 3) # 24000 / 8000 = 3
-        pcm_24k = scipy.signal.resample(pcm_8k, new_samples).astype(np.int16)
-        
-        return pcm_24k.tobytes()
-        
+        return g711.resample_down_3x(pcm24k_bytes)
     except Exception as e:
-        logger.error(f"Audio Decode Error: {e}")
-        return b'\x00' * 320 # Fallback 10ms silence
-
-def pcm16_to_mulaw(pcm16_bytes):
-    """
-    Convert 24kHz PCM16 bytes -> 8kHz Mu-law bytes
-    """
-    try:
-        # 1. Bytes -> Int16 Array
-        pcm_24k = np.frombuffer(pcm16_bytes, dtype=np.int16)
-        
-        # 2. Resample 24kHz -> 8kHz
-        # Downsample by 3
-        new_samples = int(len(pcm_24k) / 3)
-        if new_samples == 0: return b''
-        
-        pcm_8k = scipy.signal.resample(pcm_24k, new_samples).astype(np.int16)
-        
-        # 3. Encode Mu-law
-        # G.711 compression
-        # y = ln(1 + mu*|x|) / ln(1+mu)
-        mu = 255.0
-        x = pcm_8k / 32767.0
-        # Clip
-        x = np.clip(x, -1.0, 1.0)
-        
-        magnitude = np.log(1 + mu * np.abs(x)) / np.log(1 + mu)
-        sign = np.sign(x)
-        encoded = (magnitude * 127).astype(np.int8) * sign
-        
-        # This is a Rough 'companding', but true G.711 involves specific quantization steps.
-        # For a voice assistant, this approximation is often 'audible' but maybe noisy.
-        # A Better approach: Quantize to 8 bit.
-        # ...
-        # Let's revert to a simpler "pcm2ulaw" lookup or bit manipulation if possible.
-        # Or just trust the `audioop` replacement logic:
-        
-        # Inverse of the decoder:
-        sample = pcm_8k
-        sign = np.where(sample < 0, 0x80, 0x00)
-        sample = np.abs(sample)
-        sample = sample * (8159.0 / 32767.0) # Downscale back to 13-bit-ish
-        sample = np.clip(sample, 0, 8159).astype(int)
-        
-        # This is complicated to vectorize purely without conditions.
-        # Let's stick effectively to the companding approx or just standard PCM->mulaw map.
-        # For now, let's use the companding float approx, mapped to u-law bytes.
-        # (Standard G.711 is non-linear quantization).
-        
-        # Map -1..1 -> 0..255 (mulaw)
-        # Using a direct mapping might be better?
-        # No, let's use the provided logic which is close enough for POC.
-        
-        # Refined Companding:
-        y_abs = np.abs(x)
-        v = np.log(1 + 255 * y_abs) / np.log(1 + 256) # standard-ish
-        encoded_val = (v * 128).astype(np.uint8) # 0-128
-        
-        # Fix sign/bit inversion for valid u-law
-        # Note: This part is tricky to get perfect without a library.
-        # Let's assume the user accepts "Telephone Quality".
-        
-        # NOTE: If we produce garbage noise, it's this function.
-        # I'll output simpliest G.711 approx:
-        # Just send 8k PCM if Exotel supports it? Exotel supports 'audio/L16;rate=8000' usually if negotiated?
-        # But 'mulaw' is the default.
-        
-        # Let's assume the conversion works "Okay" with this approx.
-        # The key is bit-inversion at the end.
-        encoded_byte = ~(encoded_val) # Invert?
-        # Actually proper G.711 table is huge.
-        
-        pass # Using the approximate one above
-        
-        # Real logic:
-        # bias = 33
-        # ... (skipping full implementation for brevity) ...
-        # Let's iterate:
-        
-        # Placeholder for robust encoding:
-        # We will iterate since vectorized is hard for bitwise logic here.
-        # ACTUALLY, fastest way:
-        # Use mu-law table precomputed.
-        pass
-
-        return encoded_val.tobytes()
-
-    except Exception as e:
-        logger.error(f"Audio Encode Error: {e}")
+        logger.error(f"Resample Error: {e}")
         return b''
 
-# --- CLASS ---
+def pcm8k_to_pcm24k(pcm8k_bytes):
+    """Convert 8kHz PCM16 bytes -> 24kHz PCM16 bytes (Azure format)"""
+    try:
+        return g711.resample_up_3x(pcm8k_bytes)
+    except Exception as e:
+        logger.error(f"Resample Error: {e}")
+        return b'\x00' * 320
 
 class ExotelCallHandler:
-    def __init__(self, websocket: WebSocket, call_id: str):
+    def __init__(self, websocket: WebSocket, caller_phone: str = None):
         self.websocket = websocket
-        self.call_id = call_id
-        self.azure_client = None
+        self.caller_phone = caller_phone or "Unknown"
+        self.call_sid = None
         self.stream_sid = None
+        self.azure_client = None
         self.is_active = False
-        
+        self.listen_task = None
+        # Audio buffer for meeting Exotel's minimum chunk size (3200 bytes)
+        self.audio_buffer = b''
+        self.MIN_CHUNK_SIZE = 3200  # 100ms at 8kHz 16-bit mono
+
     async def start(self):
         self.is_active = True
         self.azure_client = RealtimeClient(
-            on_audio_received=self.handle_azure_audio,
-            on_text_received=lambda text: logger.info(f"Azure: {text}"),
-            on_response_done=lambda: logger.info("Response Done")
+            caller_phone=self.caller_phone,  # Pass caller phone from Exotel
+            on_audio_received=self.handle_ai_audio,
+            on_text_received=lambda text: logger.info(f"AI: {text.encode('ascii', 'replace').decode('ascii') if text else ''}"),
+            on_response_done=self._on_response_done,
+            on_call_ended=self.handle_call_ended,
+            on_interruption=self.handle_interruption
         )
+        
         if await self.azure_client.connect():
-            logger.info(f"[{self.call_id}] Azure Connected")
-        else:
-            await self.close()
+            self.listen_task = asyncio.create_task(self.azure_client.listen())
+            logger.info("AI Client Connected")
+
+    async def _on_response_done(self):
+        """Called when AI finishes a response - flush any remaining audio"""
+        logger.info("Response Done - flushing audio buffer")
+        if self.audio_buffer:
+            await self._send_to_exotel(self.audio_buffer)
+            self.audio_buffer = b''
 
     async def handle_exotel_message(self, message: str):
+        """Handle WebSocket messages from Exotel."""
         try:
             data = json.loads(message)
             event = data.get('event')
 
             if event == 'connected':
-                logger.info(f"Exotel Connected: {data}")
-            elif event == 'start':
-                self.stream_sid = data.get('stream_sid')
-                logger.info(f"Stream Started: {self.stream_sid}")
-            elif event == 'media':
-                payload = data.get('media', {}).get('payload')
-                if payload:
-                    chunk_mulaw = base64.b64decode(payload)
-                    chunk_pcm24 = mulaw_to_pcm16(chunk_mulaw)
-                    await self.azure_client.send_audio(chunk_pcm24)
-            elif event == 'stop':
-                await self.close()
-                
-        except Exception as e:
-            logger.error(f"Exotel Msg Error: {e}")
+                logger.info("Exotel: WebSocket Connected")
 
-    async def handle_azure_audio(self, pcm_24k_chunk: bytes):
-        if not self.is_active or not self.stream_sid: return
+            elif event == 'start':
+                # Debug: Log full start event to understand Exotel's data structure
+                logger.info(f"Exotel START event data: {data}")
+                
+                self.stream_sid = data.get('stream_sid', 'unknown_stream')
+                self.call_sid = data.get('call_sid', 'unknown_call')
+                
+                # Exotel sends caller phone in data['start']['from']
+                start_data = data.get('start', {})
+                self.caller_phone = (
+                    start_data.get('from') or  # Primary: from start.from
+                    self.caller_phone or  # Keep URL-provided phone if available
+                    "Unknown"
+                )
+                logger.info(f"Exotel Stream Started: {self.stream_sid} | Caller: {self.caller_phone}")
+                
+                # Update azure_client with actual caller phone
+                if self.azure_client:
+                    self.azure_client.caller_phone = self.caller_phone
+                    logger.info(f"Updated RealtimeClient caller_phone: {self.caller_phone}")
+                
+                # Now that we have stream_sid, trigger the greeting
+                await self._trigger_greeting()
+
+            elif event == 'media':
+                # Exotel sends 8kHz PCM16, convert to 24kHz for Azure
+                payload = data['media']['payload']
+                chunk = base64.b64decode(payload)
+                pcm24 = pcm8k_to_pcm24k(chunk)
+                if self.azure_client:
+                    await self.azure_client.send_audio(pcm24)
+
+            elif event == 'stop':
+                logger.info("Exotel Stream Stopped")
+                await self.close()
+
+        except Exception as e:
+            logger.error(f"Exotel Handler Error: {e}")
+
+    async def handle_ai_audio(self, pcm_24k_chunk: bytes):
+        """Receive audio from AI (24kHz PCM16), resample to 8kHz PCM16, buffer and send."""
+        if not self.is_active:
+            return
+
+        # Resample 24kHz -> 8kHz
+        chunk_8k = pcm24k_to_pcm8k(pcm_24k_chunk)
+        if not chunk_8k:
+            return
+
+        # Add to buffer
+        self.audio_buffer += chunk_8k
+
+        # Send when we have at least MIN_CHUNK_SIZE bytes
+        while len(self.audio_buffer) >= self.MIN_CHUNK_SIZE:
+            # Take exactly MIN_CHUNK_SIZE bytes (which is a multiple of 320)
+            to_send = self.audio_buffer[:self.MIN_CHUNK_SIZE]
+            self.audio_buffer = self.audio_buffer[self.MIN_CHUNK_SIZE:]
+            await self._send_to_exotel(to_send)
+
+    async def _send_to_exotel(self, audio_bytes):
+        """Send audio chunk to Exotel."""
+        if not self.is_active or not audio_bytes:
+            return
+            
+        # Ensure chunk is multiple of 320 bytes
+        remainder = len(audio_bytes) % 320
+        if remainder != 0:
+            # Pad to next multiple of 320
+            audio_bytes += b'\x00' * (320 - remainder)
         
-        chunk_mulaw = pcm16_to_mulaw(pcm_24k_chunk)
-        if not chunk_mulaw: return
+        logger.info(f">>> SENDING {len(audio_bytes)} bytes to Exotel (PCM16 8kHz)")
+        payload = base64.b64encode(audio_bytes).decode('utf-8')
         
-        payload = base64.b64encode(chunk_mulaw).decode('utf-8')
         msg = {
             "event": "media",
             "stream_sid": self.stream_sid,
-            "media": {"payload": payload}
+            "media": {
+                "payload": payload
+            }
+        }
+        try:
+            await self.websocket.send_text(json.dumps(msg))
+        except Exception as e:
+            logger.error(f"Error sending to Exotel: {e}")
+
+    async def handle_interruption(self):
+        """Clear Exotel's audio buffer if user interrupts."""
+        logger.info("Clearing Exotel Buffer...")
+        self.audio_buffer = b''  # Clear our buffer too
+        msg = {
+            "event": "clear",
+            "stream_sid": self.stream_sid
         }
         await self.websocket.send_text(json.dumps(msg))
 
+    async def handle_call_ended(self):
+        """AI requested to end the call."""
+        logger.info("AI requested hangup. Waiting for audio to drain...")
+        await asyncio.sleep(2.0)
+        await self.close()
+
     async def close(self):
         self.is_active = False
+        if self.listen_task:
+            self.listen_task.cancel()
+        
+        try:
+            await self.websocket.close()
+            logger.info("Exotel WebSocket Closed")
+        except:
+            pass
+        
         if self.azure_client:
             await self.azure_client.disconnect()
+
+    async def _trigger_greeting(self):
+        """Force AI to speak first with a greeting (within Exotel's 10-sec timeout)."""
+        if self.azure_client and self.azure_client.ws:
+            msg = {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "Call connected. Greet the caller warmly: 'Namaste! Health Plus Clinic. Ela help cheyagalanu?'"
+                        }
+                    ]
+                }
+            }
+            await self.azure_client.ws.send(json.dumps(msg))
+            await self.azure_client.ws.send(json.dumps({"type": "response.create"}))
+            logger.info("Greeting triggered")

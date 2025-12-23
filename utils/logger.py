@@ -44,8 +44,20 @@ def get_logger(name: str) -> logging.Logger:
         file_handler.setFormatter(detailed_formatter)
         logger.addHandler(file_handler)
         
-        # Console handler (simple)
-        console_handler = logging.StreamHandler(sys.stdout)
+        # Custom Safe Stream Handler for Windows Console
+        class SafeStreamHandler(logging.StreamHandler):
+            def emit(self, record):
+                try:
+                    msg = self.format(record)
+                    stream = self.stream
+                    # Write bytes directly to avoid encoding issues
+                    stream.buffer.write(msg.encode('utf-8', 'replace') + b'\n')
+                    self.flush()
+                except Exception:
+                    self.handleError(record)
+
+        # Console handler (safe)
+        console_handler = SafeStreamHandler(sys.stdout)
         console_handler.setLevel(getattr(logging, LOG_LEVEL))
         console_handler.setFormatter(simple_formatter)
         logger.addHandler(console_handler)

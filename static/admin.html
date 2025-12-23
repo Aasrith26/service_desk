@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clinic Admin Dashboard</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --success: #16a34a;
+            --danger: #dc2626;
+            --warning: #ca8a04;
+            --bg: #f3f4f6;
+            --card: #ffffff;
+            --text: #1f2937;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 350px;
+            gap: 20px;
+        }
+
+        .card {
+            background: var(--card);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+
+        h1, h2, h3 { margin-top: 0; }
+
+        /* Current Token Display */
+        .current-token-card {
+            text-align: center;
+            padding: 40px;
+        }
+
+        .token-display {
+            font-size: 8rem;
+            font-weight: bold;
+            color: var(--primary);
+            line-height: 1;
+            margin: 20px 0;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 20px;
+        }
+
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        
+        button:hover { opacity: 0.9; }
+
+        .btn-next { background: var(--primary); color: white; font-size: 1.2rem; }
+        .btn-visit { background: var(--success); color: white; }
+        .btn-skip { background: var(--warning); color: white; }
+        .btn-noshow { background: var(--danger); color: white; }
+
+        /* Lists */
+        .list-group {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .list-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .list-item:last-child { border-bottom: none; }
+
+        .token-badge {
+            background: #e0e7ff;
+            color: #3730a3;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+
+        .status-badge {
+            font-size: 0.8rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: #eee;
+        }
+
+        .skipped-item { background-color: #fffbeb; }
+        
+        .requeue-btn {
+            background: var(--primary);
+            color: white;
+            padding: 4px 8px;
+            font-size: 0.8rem;
+        }
+
+        /* Header */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .clinic-select {
+            padding: 8px;
+            border-radius: 6px;
+            border: 1px solid #ccc;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>Clinic Queue Manager</h1>
+        <select id="clinicSelect" class="clinic-select" onchange="loadQueue()">
+            <option value="">Loading Clinics...</option>
+        </select>
+    </header>
+
+    <div class="container">
+        <!-- Main Area -->
+        <div class="main-area">
+            <div class="card current-token-card">
+                <h2>Now Serving</h2>
+                <div id="currentToken" class="token-display">--</div>
+                <div id="currentPatient" style="font-size: 1.5rem; color: #666;">Waiting for updates...</div>
+                
+                <div class="controls">
+                    <button class="btn-visit" onclick="updateStatus('VISITED')">Mark Visited</button>
+                    <button class="btn-skip" onclick="updateStatus('SKIPPED')">Skip (Late)</button>
+                    <button class="btn-noshow" onclick="updateStatus('NO_SHOW')">No Show</button>
+                </div>
+                <br>
+                <button class="btn-next" onclick="callNext()">📢 Call Next Token</button>
+            </div>
+
+            <div class="card" style="margin-top: 20px;">
+                <h3>Waiting List</h3>
+                <ul id="waitingList" class="list-group">
+                    <!-- Items go here -->
+                </ul>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="card">
+                <h3>Skipped / Late</h3>
+                <p style="font-size: 0.9rem; color: #666;">Patients who missed their turn.</p>
+                <ul id="skippedList" class="list-group">
+                    <!-- Items go here -->
+                </ul>
+            </div>
+            
+            <div class="card" style="margin-top: 20px;">
+                <h3>Stats</h3>
+                <p>Total Visited: <strong id="totalVisited">0</strong></p>
+                <p>Waiting: <strong id="totalWaiting">0</strong></p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000/dashboard';
+        let currentClinicId = null;
+        let currentTokenId = null;
+
+        async function init() {
+            // Load clinics
+            const res = await fetch(`${API_BASE}/clinics`);
+            const clinics = await res.json();
+            const select = document.getElementById('clinicSelect');
+            select.innerHTML = '';
+            
+            clinics.forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c.id;
+                opt.textContent = c.name;
+                select.appendChild(opt);
+            });
+
+            if (clinics.length > 0) {
+                currentClinicId = clinics[0].id;
+                loadQueue();
+                // Auto refresh every 10s
+                setInterval(loadQueue, 10000);
+            }
+        }
+
+        async function loadQueue() {
+            if (!currentClinicId) return;
+            
+            try {
+                const res = await fetch(`${API_BASE}/queue?clinic_id=${currentClinicId}`);
+                const data = await res.json();
+                
+                // Update Current
+                document.getElementById('currentToken').textContent = data.current_token || "--";
+                currentTokenId = data.current_token_id;
+                
+                // Find patient name for current token
+                // Since API doesn't return name directly in root, we might need to infer or fetch
+                // Actually, let's assume if we have a token ID, we are good.
+                // Ideally backend should return current patient name.
+                // For now, just show status.
+                document.getElementById('currentPatient').textContent = data.current_token ? "Serving..." : "Ready for next";
+
+                // Update Waiting
+                const waitList = document.getElementById('waitingList');
+                waitList.innerHTML = '';
+                document.getElementById('totalWaiting').textContent = data.waiting.length;
+
+                data.waiting.forEach(p => {
+                    const li = document.createElement('li');
+                    li.className = 'list-item';
+                    li.innerHTML = `
+                        <div>
+                            <span class="token-badge">#${p.token}</span>
+                            <strong>${p.name}</strong>
+                            <span style="color: #666; font-size: 0.9rem;">(${p.time})</span>
+                        </div>
+                        <span class="status-badge">${p.status}</span>
+                    `;
+                    waitList.appendChild(li);
+                });
+
+                // Update Skipped
+                const skipList = document.getElementById('skippedList');
+                skipList.innerHTML = '';
+                
+                data.skipped.forEach(p => {
+                    const li = document.createElement('li');
+                    li.className = 'list-item skipped-item';
+                    li.innerHTML = `
+                        <div>
+                            <span class="token-badge">#${p.token}</span>
+                            <strong>${p.name}</strong>
+                        </div>
+                        <button class="requeue-btn" onclick="requeue('${p.id}')">Add to Queue</button>
+                    `;
+                    skipList.appendChild(li);
+                });
+
+                document.getElementById('totalVisited').textContent = data.total_visited;
+
+            } catch (e) {
+                console.error("Error loading queue:", e);
+            }
+        }
+
+        async function callNext() {
+            if (!currentClinicId) return;
+            try {
+                const res = await fetch(`${API_BASE}/queue/next?clinic_id=${currentClinicId}`, { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    loadQueue();
+                } else {
+                    alert(data.message || "Error calling next token");
+                }
+            } catch (e) {
+                alert("Failed to call next token");
+            }
+        }
+
+        async function updateStatus(status) {
+            if (!currentTokenId) {
+                alert("No active token to update!");
+                return;
+            }
+            
+            try {
+                const res = await fetch(`${API_BASE}/queue/status`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        appointment_id: currentTokenId,
+                        status: status
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    loadQueue();
+                } else {
+                    alert(data.error);
+                }
+            } catch (e) {
+                alert("Failed to update status");
+            }
+        }
+
+        async function requeue(id) {
+            try {
+                const res = await fetch(`${API_BASE}/queue/status`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        appointment_id: id,
+                        status: 'BOOKED' // Re-queue as booked
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    loadQueue();
+                }
+            } catch (e) {
+                alert("Failed to requeue");
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>

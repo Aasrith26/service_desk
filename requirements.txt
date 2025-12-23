@@ -5,8 +5,15 @@ sounddevice>=0.4.6
 numpy>=1.24.0
 pandas>=2.0.0
 openpyxl>=3.1.0
+azure-cognitiveservices-speech
+psycopg2-binary>=2.9.9
+alembic
+pydantic>=0.0.8
 fastapi>=0.109.0
 uvicorn>=0.27.0
 scipy>=1.10.0
 pyngrok>=7.0.0
 python-multipart>=0.0.9
+webrtcvad-wheels>=2.0.10
+sqlmodel>=0.0.8
+twilio>=9.0.0

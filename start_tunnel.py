@@ -11,7 +11,8 @@ def start_tunnel():
         
         # We need to catch the specific error or generic one
         try:
-            public_url = ngrok.connect(8000).public_url
+            # Point to VOICE SERVICE (8001) instead of API Server (8000)
+            public_url = ngrok.connect(8001).public_url
         except Exception as e:
             error_msg = str(e)
             if "ERR_NGROK_4018" in error_msg or "authentication failed" in error_msg.lower():
@@ -25,7 +26,7 @@ def start_tunnel():
                     print("Setting token...")
                     ngrok.set_auth_token(token)
                     # Retry
-                    public_url = ngrok.connect(8000).public_url
+                    public_url = ngrok.connect(8001).public_url
                 else:
                     print("No token provided. Exiting.")
                     return
@@ -40,7 +41,7 @@ def start_tunnel():
         print("FOR EXOTEL SETUP:")
         # Convert https -> wss
         wss_url = public_url.replace("https://", "wss://").replace("http://", "ws://")
-        print(f"WebSocket URL: {wss_url}/stream/call1")
+        print(f"WebSocket URL: {wss_url}/stream/exotel")
         print("="*60)
         
         # Keep process alive

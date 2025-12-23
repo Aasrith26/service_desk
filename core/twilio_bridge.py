@@ -39,8 +39,9 @@ import asyncio
 # ... imports ...
 
 class TwilioCallHandler:
-    def __init__(self, websocket: WebSocket):
+    def __init__(self, websocket: WebSocket, caller_phone: str = "Unknown"):
         self.websocket = websocket
+        self.caller_phone = caller_phone
         self.azure_client = None
         self.stream_sid = None
         self.is_active = False
@@ -54,7 +55,8 @@ class TwilioCallHandler:
             on_text_received=lambda text: logger.info(f"Azure: {text}"),
             on_response_done=lambda: logger.info("Response Done"),
             on_call_ended=self.handle_call_ended,
-            on_interruption=self.handle_interruption
+            on_interruption=self.handle_interruption,
+            caller_phone=self.caller_phone # Pass initial phone
         )
         if await self.azure_client.connect():
             # Start listening loop in background
@@ -69,7 +71,19 @@ class TwilioCallHandler:
             if event == 'start':
                 self.stream_sid = data['start']['streamSid']
                 self.call_sid = data['start']['callSid']
-                logger.info(f"Twilio Stream Started: {self.stream_sid}")
+                
+                # Extract Caller from Custom Parameters (sent via TwiML <Parameter>)
+                custom_params = data["start"].get("customParameters", {})
+                if "caller" in custom_params:
+                    self.caller_phone = custom_params["caller"]
+                    logger.info(f"Updated Caller ID from Params: {self.caller_phone}")
+                
+                 # Update Azure Client with correct phone for logging
+                if self.azure_client:
+                    self.azure_client.call_sid = self.call_sid
+                    self.azure_client.caller_phone = self.caller_phone
+
+                logger.info(f"Twilio Stream Started: {self.stream_sid} | Caller: {self.caller_phone}")
             
             elif event == 'media':
                 # Twilio sends base64 mulaw payload
@@ -82,15 +96,17 @@ class TwilioCallHandler:
                 # DEBUG: Check if audio is silent
                 # Simple RMS check (approx) -> using numpy directly to avoid circular import if needed
                 # But we can just use np here.
-                if np.random.random() < 0.05: # Log 5% of packets
-                    y = np.frombuffer(pcm24, dtype=np.int16)
-                    rms = np.sqrt(np.mean(y.astype(float)**2))
-                    logger.info(f"Mic Level (RMS): {rms:.2f} (Zeros? {np.all(y==0)})")
+                # if np.random.random() < 0.05: # Log 5% of packets
+                #     y = np.frombuffer(pcm24, dtype=np.int16)
+                #     rms = np.sqrt(np.mean(y.astype(float)**2))
+                #     logger.info(f"Mic Level (RMS): {rms:.2f} (Zeros? {np.all(y==0)})")
 
                 await self.azure_client.send_audio(pcm24)
             
             elif event == 'stop':
                 logger.info("Twilio Stream Stopped")
+                if self.azure_client and self.call_sid:
+                     await self.azure_client.save_call_log(self.call_sid, self.caller_phone)
                 await self.close()
 
         except Exception as e:
@@ -121,6 +137,10 @@ class TwilioCallHandler:
         # Give 2 seconds for the "Goodbye" audio to play out before cutting connection
         await asyncio.sleep(2.0)
         logger.info("Hanging up now.")
+        
+        if self.azure_client and self.call_sid:
+            await self.azure_client.save_call_log(self.call_sid, self.caller_phone)
+            
         await self.close()
 
     async def handle_interruption(self):
@@ -142,5 +162,12 @@ class TwilioCallHandler:
             except asyncio.CancelledError:
                 pass
         
+        # KEY FIX: Explicitly close the Twilio WebSocket to force call termination
+        try:
+            await self.websocket.close()
+            logger.info("Twilio WebSocket closed.")
+        except Exception as e:
+            logger.error(f"Error closing Twilio socket: {e}")
+
         if self.azure_client:
             await self.azure_client.disconnect()

@@ -14,15 +14,16 @@ from core.context_retriever import ContextRetriever
 logger = get_logger(__name__)
 
 class RealtimeClient:
-    def __init__(self, on_audio_received=None, on_text_received=None, on_response_done=None, on_call_ended=None, on_interruption=None):
+    def __init__(self, on_audio_received=None, on_text_received=None, on_response_done=None, on_call_ended=None, on_interruption=None, caller_phone=None):
         self.ws = None
         self.is_connected = False
+        self.caller_phone = caller_phone or "Unknown"  # Auto-captured from Exotel
         self.on_audio_received = on_audio_received
         self.on_text_received = on_text_received
         self.on_response_done = on_response_done
         self.on_call_ended = on_call_ended
         self.on_interruption = on_interruption
-        self.ignore_audio = False # Packet gating flag
+        self.ignore_audio = False 
         self.context_retriever = ContextRetriever()
 
     async def connect(self):
@@ -57,16 +58,28 @@ class RealtimeClient:
         
         BOOKING PROCESS:
         1. When user requests appointment, use get_available_slots or check_slot_availability
-        2. Collect: doctor, date, time, patient name (in Latin script), phone
-        3. BEFORE booking, confirm ALL details with user
-        4. ONLY after user says "yes/OK/సరే", call book_appointment tool
-        5. If user says goodbye or is done, FIRST say a polite goodbye (e.g. "Thank you, have a nice day!"), THEN use the end_call tool immediately.
+        2. Collect: doctor, date, time, patient name (in Latin script)
+        3. DO NOT ask for phone number - it is automatically captured from the call
+        4. BEFORE booking, confirm ALL details with user
+        5. ONLY after user says "yes/OK/సరే", call book_appointment tool
+        6. ENDING THE CALL (FOLLOW THIS EXACTLY):
+           - First ask: "Inkemina help kavala?" or "Is there anything else?"
+           - Wait for their response
+           - When they say no/bye/done:
+             1. Say a warm goodbye: "Thank you for calling! Have a great day!" 
+             2. THEN call the end_call tool
+           - NEVER hang up without saying goodbye first!
         
-        TIME CONFIRMATION (CRITICAL):
-        - Always say times in NUMERIC format: "10:00" not "పది గంటలు"
-        - When confirming, use format: "morning 10:00" or "ఉదయం 10:00"
-        - Avoid Telugu number words for times - they cause confusion
-        - Example: "Tomorrow morning 10:00 okay?" NOT "రేపు పది గంటలకు"
+        TIME FORMAT (VERY IMPORTANT):
+        - NEVER say times in 24-hour format like "nineteen hundred" or "1900"
+        - ALWAYS use 12-hour format with AM/PM: "7 PM", "10 AM", "3:30 PM"
+        - Say times naturally: "evening 7 PM", "morning 10 AM"
+        - WRONG: "19:00", "1900", "nineteen hundred"
+        - CORRECT: "7 PM", "evening 7 o'clock"
+        
+        PRONUNCIATION:
+        - Say "appointment" clearly, NOT "appoint"
+        - Pronounce all words completely
         
         STYLE:
         - Keep responses SHORT - this is a phone call!
@@ -103,9 +116,9 @@ class RealtimeClient:
                         "date": {"type": "string", "description": "Date in YYYY-MM-DD format"},
                         "time": {"type": "string", "description": "Time in HH:MM format"},
                         "patient_name": {"type": "string", "description": "Patient name in Latin script"},
-                        "patient_phone": {"type": "string", "description": "Patient phone number"}
+                        "patient_phone": {"type": "string", "description": "Patient phone number (optional - auto-captured from call)"}
                     },
-                    "required": ["doctor", "date", "time", "patient_name", "patient_phone"]
+                    "required": ["doctor", "date", "time", "patient_name"]
                 }
             },
             {
@@ -183,7 +196,7 @@ class RealtimeClient:
                     logger.info("New response started. Unblocking audio.")
                     self.ignore_audio = False # GATE: Open gate for new response
 
-                elif data['type'] == 'response.audio.delta' and self.on_audio_received:
+                elif event_type == 'response.audio.delta' and self.on_audio_received:
                     if self.ignore_audio:
                         # logger.debug("Dropped stale audio packet")
                         pass
@@ -206,7 +219,11 @@ class RealtimeClient:
                     call_id = data.get('call_id')
                     function_name = data.get('name')
                     arguments_str = data.get('arguments', '{}')
-                    arguments = json.loads(arguments_str)
+                    try:
+                        arguments = json.loads(arguments_str)
+                    except json.JSONDecodeError as e:
+                        logger.warning(f'Function call interrupted - incomplete JSON: {e}')
+                        continue
                     
                     logger.info(f"Function called: {function_name} with {arguments}")
                     
@@ -280,7 +297,8 @@ class RealtimeClient:
                 date = arguments.get("date")
                 time = arguments.get("time")
                 patient_name = arguments.get("patient_name")
-                patient_phone = arguments.get("patient_phone")
+                # Use auto-captured phone from Exotel if not provided
+                patient_phone = arguments.get("patient_phone") or self.caller_phone
                 
                 success = self.context_retriever.db.book_slot(doctor, date, time, patient_name, patient_phone)
                 return {

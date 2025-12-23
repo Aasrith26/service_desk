@@ -1,3 +1,72 @@
+# Environment and secrets
 .env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
 logs/
 *.log
+voice_debug.log
+server_debug.log
+clinic_voice_assistant.log
+
+# Database (local SQLite)
+*.db
+clinic.db
+
+# Debug and temp files
+debug_*.txt
+db_state*.txt
+buildlogs/
+
+# Tools (local utilities)
+tools/
+
+# Knowledge base cache
+knowledge/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
