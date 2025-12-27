@@ -17,3 +17,4 @@ python-multipart>=0.0.9
 webrtcvad-wheels>=2.0.10
 sqlmodel>=0.0.8
 twilio>=9.0.0
+bcrypt>=4.0.0
