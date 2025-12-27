@@ -1,0 +1,33 @@
+# Render Blueprint - Deploy Both Services
+# This file defines two web services from the same repo
+
+services:
+  # API Server (Dashboard API for Flutter)
+  - type: web
+    name: clinic-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port 10000
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false  # Set manually in dashboard
+      - key: PYTHON_VERSION
+        value: "3.11"
+
+  # Voice Service (WebSocket for Exotel)
+  - type: web
+    name: clinic-voice
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn voice_service:app --host 0.0.0.0 --port 10000
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: AZURE_REALTIME_ENDPOINT
+        sync: false
+      - key: AZURE_API_KEY
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.11"

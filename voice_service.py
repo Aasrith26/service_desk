@@ -81,6 +81,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for Render/monitoring"""
+    return {"status": "healthy", "service": "voice-service"}
+
 @app.get("/", response_class=HTMLResponse)
 async def index_page():
     return "<h1>Voice Microservice Running</h1>"
