@@ -47,6 +47,11 @@ class Clinic(SQLModel, table=True):
     # AI Configuration
     ai_config: Optional[str] = None  # JSON for voice settings
     
+    # Rush/Queue Settings
+    rush_low_threshold: int = Field(default=3)  # Patients waiting for "Low" rush
+    rush_medium_threshold: int = Field(default=7)  # Patients waiting for "Medium" rush
+    average_consultation_minutes: int = Field(default=10)  # Avg time per patient
+    
     # Legacy fields
     cal_com_api_key: Optional[str] = None
     cal_com_event_type_id: Optional[int] = None

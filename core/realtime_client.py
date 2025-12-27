@@ -10,6 +10,7 @@ from config.settings import AZURE_REALTIME_ENDPOINT, AZURE_API_KEY
 from utils.logger import get_logger
 from utils.audio_utils import pcm_to_base64, base64_to_pcm
 from core.context_retriever import ContextRetriever
+from core.services.token_service import TokenService
 
 logger = get_logger(__name__)
 
@@ -45,16 +46,26 @@ class RealtimeClient:
         context = self.context_retriever.get_context()
 
         instructions = f"""
-        ROLE: You are Sneha, a warm receptionist at Health Plus Clinic,Help pateints with all sorts of clinic information.
+        ROLE: You are Sneha, a warm receptionist at Health Plus Clinic. Help patients with all sorts of clinic information.
         Always be kind and helpful.
         LANGUAGE: Speak naturally in Telugu/Hinglish mix.
         Examples: "Okay sir, check చేస్తాను", "Name ఏమిటి?", "Slot available ఉందా చూద్దాం"
         
         AVAILABLE TOOLS:
-        You have 3 tools to help with bookings:
+        You have 5 tools to help patients:
         1. **check_slot_availability**: Check if a specific slot is free (use BEFORE confirming!)
         2. **book_appointment**: Book after getting confirmation from patient
         3. **get_available_slots**: Get all available slots for a doctor/date
+        4. **get_clinic_status**: Get current rush level, token being served, wait time, queue info
+        5. **end_call**: End the call after saying goodbye
+        
+        RUSH/WAIT QUERIES:
+        When patient asks about rush, wait time, current token, or how busy:
+        - Use get_clinic_status tool to get real-time info
+        - Tell them rush level (Low/Medium/High)
+        - Tell them current token number if someone is being served
+        - Tell them estimated wait time
+        - Example: "Low rush undi sir, 2 patients waiting, approximately 20 minutes wait"
         
         BOOKING PROCESS:
         1. When user requests appointment, use get_available_slots or check_slot_availability
@@ -137,6 +148,16 @@ class RealtimeClient:
                     "type": "function",
                     "name": "end_call",
                     "description": "Call this AFTER you have spoken your final goodbye message. This will disconnect the phone.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+            },
+            {
+                    "type": "function",
+                    "name": "get_clinic_status",
+                    "description": "Get current clinic status including rush level (Low/Medium/High), current token being served, estimated wait time, and number of patients waiting. Use when patient asks about rush, wait time, queue, or current token.",
                     "parameters": {
                         "type": "object",
                         "properties": {},
@@ -333,6 +354,28 @@ class RealtimeClient:
                     # We can schedule the disconnect
                     asyncio.create_task(self._call(self.on_call_ended))
                 return {"message": "Call ended"}
+            
+            elif function_name == "get_clinic_status":
+                # Get clinic ID from context retriever
+                clinic_id = self.context_retriever.clinic.id
+                
+                # Get rush info
+                rush_info = TokenService.get_clinic_rush_info(clinic_id)
+                
+                # Get queue status for current token
+                queue_status = TokenService.get_queue_status(clinic_id)
+                
+                current_token = None
+                if queue_status.get('current_token'):
+                    current_token = queue_status['current_token'].get('token_number')
+                
+                return {
+                    "rush_level": rush_info.get('rush_level', 'Unknown'),
+                    "waiting_count": rush_info.get('waiting_count', 0),
+                    "estimated_wait": rush_info.get('estimated_wait', 'Unknown'),
+                    "current_token": current_token,
+                    "message": f"Rush level is {rush_info.get('rush_level', 'Unknown')}, {rush_info.get('waiting_count', 0)} patients waiting, estimated wait {rush_info.get('estimated_wait', 'Unknown')}"
+                }
             
             else:
                 return {"error": f"Unknown function: {function_name}"}

@@ -75,6 +75,10 @@ class ExotelCallHandler:
                 self.stream_sid = data.get('stream_sid', 'unknown_stream')
                 self.call_sid = data.get('call_sid', 'unknown_call')
                 
+                # Track call start time for logging
+                from datetime import datetime
+                self.call_start_time = datetime.now()
+                
                 # Exotel sends caller phone in data['start']['from']
                 start_data = data.get('start', {})
                 self.caller_phone = (
@@ -167,7 +171,49 @@ class ExotelCallHandler:
         """AI requested to end the call."""
         logger.info("AI requested hangup. Waiting for audio to drain...")
         await asyncio.sleep(2.0)
+        await self._save_call_log()
         await self.close()
+
+    async def _save_call_log(self):
+        """Save the call log to database."""
+        from datetime import datetime
+        from core.database import ClinicDatabase
+        
+        try:
+            db = ClinicDatabase()
+            
+            # Calculate duration
+            end_time = datetime.now()
+            duration = int((end_time - self.call_start_time).total_seconds()) if hasattr(self, 'call_start_time') else 0
+            
+            # Get clinic_id
+            clinic_id = None
+            try:
+                from core.db_engine import engine
+                from sqlmodel import Session, select
+                from core.models_sql import Clinic
+                with Session(engine) as session:
+                    clinic = session.exec(select(Clinic)).first()
+                    if clinic:
+                        clinic_id = str(clinic.id)
+            except:
+                pass
+            
+            db.log_call(
+                call_sid=self.call_sid or f"exotel_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                caller_phone=self.caller_phone,
+                start_time=getattr(self, 'call_start_time', datetime.now()),
+                duration=duration,
+                transcript="Voice call completed",
+                booking_made=False,
+                was_successful=True,
+                termination_reason="completed",
+                clinic_id=clinic_id
+            )
+            logger.info(f"Call log saved: {self.call_sid} | Duration: {duration}s | Caller: {self.caller_phone}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save call log: {e}")
 
     async def close(self):
         self.is_active = False
