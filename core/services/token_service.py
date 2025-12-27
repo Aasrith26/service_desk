@@ -58,11 +58,8 @@ class TokenService:
                         logger.info(f"Time {requested_time} matched session '{clinic_session.name}' ({clinic_session.start_time}-{clinic_session.end_time})")
                         return clinic_session
 
-                # Fallback: if no exact match, use first active session
-                logger.warning(f"No session found for time {requested_time}, using fallback logic")
-                for clinic_session in sessions:
-                    return clinic_session
-
+                # Fallback: if no exact match, return None to indicate closed/invalid time
+                logger.warning(f"No session found for time {requested_time}")
                 return None
 
         except Exception as e:
