@@ -101,6 +101,11 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # API SERVER (DASHBOARD)
 # -----------------
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for Railway/monitoring"""
+    return {"status": "healthy", "service": "clinic-api"}
+
 @app.get("/", response_class=HTMLResponse)
 async def index_page():
     return """
